@@ -173,16 +173,15 @@ class Trader:
         # Values to compute pnl
         self.cash = 0
         # positions can be obtained from state.position
-    
+        
+        self.prices : Dict[PRODUCTS, pd.Series] = {
+            "SPREAD_GIFT": pd.Series(),
+            }
         # self.past_prices keeps the list of all past prices
         self.past_prices = dict()
 
         for product in PRODUCTS:
             self.past_prices[product] = []
-            
-        self.prices : Dict[PRODUCTS, pd.Series] = {
-            "SPREAD_GIFT": pd.Series(),
-            }
         
         self.ema_prices = dict()
         
@@ -190,6 +189,9 @@ class Trader:
             self.ema_prices[product] = 0
             
         self.ema_param = 0.5
+        
+        self.p_mid = []
+        self.p_spread = []
 
     def position(self, product, state : TradingState):
         return state.position.get(product, 0) 
@@ -281,7 +283,113 @@ class Trader:
             else:
                 self.ema_prices[product] = self.ema_param * mid_price + (1-self.ema_param) * self.ema_prices[product]
 
-    def compute_orders_starfruit(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
+    def compute_orders_ameth(self, state: TradingState) -> List[Order]:
+        product = 'AMETHYSTS'
+        limit = 20
+        order_depth: OrderDepth = state.order_depths[product]
+        
+        D = {(9996.0, 10004.0): [2955, 2860], (9996.0, 9998.0): [379, 2417], (9996.0, 10002.0): [631, 1318], (9996.0, 10000.0): [177, 154], (10000.0, 10004.0): [139, 77], (10000.0, 10005.0): [65, 25], (10000.0, 10002.0): [44, 37], (9995.0, 10005.0): [1932, 1869], (9995.0, 9998.0): [294, 1280], (9995.0, 10002.0): [457, 624], (9995.0, 10000.0): [27, 80], (9998.0, 10004.0): [1413, 762], (9998.0, 10005.0): [673, 456], (9998.0, 10000.0): [46, 47], (10002.0, 10004.0): [2482, 353], (10002.0, 10005.0): [1303, 221]}
+
+        orders: List[Order] = []
+
+        if product in state.position.keys():
+            q = state.position[product]
+        else:
+            q = 0
+
+        if len(order_depth.sell_orders) > 0:
+            best_ask = min(order_depth.sell_orders.keys())
+            best_ask_volume = order_depth.sell_orders[best_ask]
+            tot = 0
+            vol = 0
+            ctr = 0
+            for key in sorted(order_depth.sell_orders.keys()):
+                if ctr == 3:
+                    break
+                else:
+                    tot += key * order_depth.sell_orders[key]
+                    vol += order_depth.sell_orders[key]
+                    ctr += 1
+            ask_vwap = tot / vol
+
+        if len(order_depth.buy_orders) != 0:
+            best_bid = max(order_depth.buy_orders.keys())
+            best_bid_volume = order_depth.buy_orders[best_bid]
+            tot = 0
+            vol = 0
+            ctr = 0
+            for key in sorted(order_depth.buy_orders.keys()):
+                if ctr == 3:
+                    break
+                else:
+                    tot += key * order_depth.buy_orders[key]
+                    vol += order_depth.buy_orders[key]
+                    ctr += 1
+            bid_vwap = tot / vol
+
+        self.p_mid.append((bid_vwap + ask_vwap) / 2)
+        self.p_spread.append(best_ask - best_bid)
+
+        mu = round(statistics.fmean(self.p_mid))
+        spread = round(statistics.fmean(self.p_spread))
+
+        if (best_bid, best_ask) not in D.keys():
+            orders.append(Order(product, mu + spread // 2, (-q - limit)))
+            orders.append(Order(product, mu - spread // 2, (limit - q)))
+        else:
+            p = D[(best_bid, best_ask)][0] / (D[(best_bid, best_ask)][0] + D[(best_bid, best_ask)][1])
+            if p == 1:
+                p = 0.99
+            func = (p * (limit - q) + q) / (1 - p)
+            sell_qty = math.floor(min(limit + q, max(0, func)))
+            buy_qty = math.floor(((1 - p) * sell_qty - q) / p)
+
+            buy_qty = min(limit - q, max(0, buy_qty))
+            f = 0
+
+            if best_ask > mu and best_bid < mu:
+                if q < 0:
+                    orders.append(Order(product, best_ask, -math.ceil(sell_qty * f)))
+                    orders.append(Order(product, best_ask - 1, -math.floor(sell_qty * (1 - f))))
+                    orders.append(Order(product, best_bid + 1, math.floor(buy_qty * (1 - f))))
+                    orders.append(Order(product, best_bid, math.floor(buy_qty * f)))
+                if q >= 0:
+                    orders.append(Order(product, best_ask, -math.ceil(sell_qty * f)))
+                    orders.append(Order(product, best_ask - 1, -math.floor(sell_qty * (1 - f))))
+                    orders.append(Order(product, best_bid + 1, math.floor(buy_qty * (1 - f))))
+                    orders.append(Order(product, best_bid, math.floor(buy_qty * f)))
+            elif best_bid >= mu:
+                if best_bid == mu:
+                    if q >= 0:
+                        orders.append(Order(product, best_bid + 1, -sell_qty))
+                    else:
+                        orders.append(Order(product, best_bid + 1, -math.ceil(sell_qty)))
+                else:
+                    if q >= 0:
+                        orders.append(Order(product, best_bid, -math.ceil(sell_qty * f)))
+                        orders.append(Order(product, best_bid - 1, -math.floor(sell_qty * (1 - f))))
+                    else:
+                        orders.append(Order(product, best_bid, -math.ceil(sell_qty * f)))
+                        orders.append(Order(product, best_bid - 1, -math.floor(sell_qty * (1 - f))))
+            else:
+                if best_ask == mu:
+                    if q <= 0:
+                        orders.append(Order(product, best_ask - 1, buy_qty))
+                    else:
+                        orders.append(Order(product, best_ask - 1, math.ceil(buy_qty)))
+                else:
+                    if q <= 0:
+                        orders.append(Order(product, best_ask, math.ceil(buy_qty * f)))
+                        orders.append(Order(product, best_ask + 1, math.ceil(buy_qty * (1 - f))))
+                    else:
+                        orders.append(Order(product, best_ask, math.ceil(buy_qty * f)))
+                        orders.append(Order(product, best_ask + 1, math.floor(buy_qty * (1 - f))))
+
+        return orders
+
+    def compute_orders_starfruit(self, state: TradingState) -> List[Order]:
+        
+        order_depth: OrderDepth = state.order_depths[STAR]
         position_star = self.position(STAR, state)
 
         sell_orders = list(order_depth.sell_orders.items())
@@ -334,8 +442,7 @@ class Trader:
            
            if vol_sell[product] >= self.POSITION_LIMIT[product]/10:
                break
-    
-    
+     
     def compute_orders_gift(self, state: TradingState)-> List[Order]: 
         orders_choco = []
         orders_ichigo = []
@@ -432,14 +539,22 @@ class Trader:
             logger.print(f"\tProduct {product}, Position {self.position(product, state)}, Midprice {self.mid_price(product, state)}, Value {self.value_on_product(product, state)}, EMA {self.ema_prices[product]}")
             
         logger.print(f"\tPnL {pnl}")
-        '''
-        for product in PRODUCTS:
-            order_depth: OrderDepth = state.order_depths[product]
-            if product == STAR:
-                orders_starfruit = self.compute_orders_starfruit(order_depth, state)
-                result[STAR] += orders_starfruit
-        '''   
-        result[BASK], _, _, _ = self.compute_orders_gift(state)
+     
+        try:  
+            result[STAR] = self.compute_orders_starfruit(state)
+        except Exception as e:
+            logger.print(e)
+            
+        try:    
+            result[AMET] = self.compute_orders_ameth(state)
+        except Exception as e:
+            logger.print(e)
+        
+        try:             
+            result[BASK], _, _, _ = self.compute_orders_gift(state)
+        except Exception as e:
+            logger.print(e)
+            
         
         logger.flush(state, result, conversions, trader_data)
         return result, conversions, trader_data
