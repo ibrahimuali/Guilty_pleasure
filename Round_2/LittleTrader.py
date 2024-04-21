@@ -190,53 +190,60 @@ class Trader:
             five_segments = (humidity - HUMIDITY_IDEAL_RANGE[1]) / 5
         return five_segments * DECREASE_FOR_EACH_5PP_OUTSIDE_RANGE
     
-    def compute_orders_orchids(self, state: TradingState) -> (List[Order], int):
-        # Access the ConversionObservation for ORCHIDS
+    def compute_orders_orchids(self, state: TradingState):
         orchids_data = state.observations.conversionObservations[ORC]
 
-        bidPrice = orchids_data.bidPrice
-        askPrice = orchids_data.askPrice
-        transportFees = orchids_data.transportFees
-        exportTariff = orchids_data.exportTariff
-        importTariff = orchids_data.importTariff
+        bid_price = orchids_data.bidPrice
+        ask_price = orchids_data.askPrice
+        transport_fees = orchids_data.transportFees
+        export_tariff = orchids_data.exportTariff
+        import_tariff = orchids_data.importTariff
         sunlight = orchids_data.sunlight
         humidity = orchids_data.humidity
-        order_depth = state.order_depths[ORC]
+        
+        
+        # Log prices and environmental factors
+        logger.print(f"Debug: bid_price={bid_price}, ask_price={ask_price}, sunlight={sunlight}, humidity={humidity}")
 
-        bid_volume = math.floor(sum(quantity for price, quantity in order_depth.buy_orders.items() if price <= bidPrice))
-        ask_volume = math.ceil(sum(quantity for price, quantity in order_depth.sell_orders.items() if price >= askPrice))
-    
+        # Calculate volumes
+        order_depth = state.order_depths[ORC]
+        bid_volume = math.floor(sum(quantity for price, quantity in order_depth.buy_orders.items() if price <= bid_price))
+        ask_volume = math.ceil(sum(quantity for price, quantity in order_depth.sell_orders.items() if price >= ask_price))
+
+        # Calculate environmental effects
         sunlight_effect = self.calculate_sunlight_effect(sunlight)
         humidity_effect = self.calculate_humidity_effect(humidity)
-        
+
+        # Calculate prices and costs
         total_decrease = sunlight_effect + humidity_effect
-        potential_price_increase = bidPrice * (1 + total_decrease)
-    
-        shipping_costs = transportFees + max(exportTariff, importTariff)
-    
-        arbitrage_opportunity = potential_price_increase - askPrice
-        
-        # Position check
+        potential_price_increase = bid_price * (1 + total_decrease)
+        shipping_costs = transport_fees + max(export_tariff, import_tariff)
+        arbitrage_opportunity = potential_price_increase - ask_price
+
+        # Log arbitrage opportunity calculations
+        logger.print(f"Debug: Calculated arbitrage_opportunity={arbitrage_opportunity}")
+
+        # Prepare orders
         position_orchids = self.position(ORC, state)
         orders = []
+        logger.print(f"Debug: Current position in ORC: {position_orchids}")
         conversions = 0
 
-   # Decide buy or sell based on arbitrage opportunity and market volumes
-        if arbitrage_opportunity > 0:
-            # Buy if there is a net arbitrage opportunity and room to buy within position limits
+        if arbitrage_opportunity > 0 and position_orchids < self.position_limit[ORC]:
             buy_volume = min(self.position_limit[ORC] - position_orchids, ask_volume)
+            logger.print(f"Debug: Attempting to buy: buy_volume={buy_volume}")
             if buy_volume > 0:
-                orders.append(Order(ORC, askPrice, buy_volume))
+                orders.append(Order(ORC, ask_price, buy_volume))
                 conversions += buy_volume
 
-    # Consider selling if holding ORCHIDS and the selling conditions are favorable
         if position_orchids > 0:
-            # Only sell if effective sell price after storage costs is still profitable
-            effective_sell_price = bidPrice - (sunlight_effect + humidity_effect) * bidPrice / 100 - shipping_costs
-            sell_volume = min(position_orchids, bid_volume)
-            if effective_sell_price > askPrice and sell_volume > 0:  # Ensure selling price is above the asking price to make a profit
-                orders.append(Order(ORC, effective_sell_price, -sell_volume))
-                conversions += sell_volume
+            effective_sell_price = bid_price * (1 - (sunlight_effect + humidity_effect)) - shipping_costs
+            logger.print(f"Debug: Attempting to sell: effective_sell_price={effective_sell_price}")
+            if effective_sell_price > ask_price:
+                sell_volume = min(position_orchids, bid_volume)
+                if sell_volume > 0:
+                    orders.append(Order(ORC, effective_sell_price, -sell_volume))
+                    conversions -= sell_volume
 
         return orders, conversions
     

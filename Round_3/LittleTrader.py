@@ -372,9 +372,6 @@ class Trader:
 
         spread = price_bask - (4*price_choco + 6*price_ichigo + price_rose)
         
-        #Introducing Premium 
-        prem = price_bask - (4*price_choco + 6*price_ichigo + price_rose + 379)
-        
         self.save_prices_product("SPREAD_GIFT", state, spread)
 
         avg_spread = self.prices["SPREAD_GIFT"].rolling(WINDOW).mean()
@@ -393,14 +390,14 @@ class Trader:
                     create_orders(buy_bask)
 
                 elif spread_5 > avg_spread + 2*std_spread: # sell basket
-                    sell_bask = False 
-                    create_orders(sell_bask)
+                    buy_bask = False 
+                    create_orders(buy_bask)
             
             else:
                 if position_bask > 0 : # sell basket
                     if spread_5 > avg_spread + 2*std_spread:
-                        sell_bask = False
-                        create_orders(sell_bask)
+                        buy_bask = False
+                        create_orders(buy_bask)
 
                 else: # buy basket
                     if spread_5 < avg_spread - 2*std_spread:
@@ -439,7 +436,7 @@ class Trader:
                 orders_starfruit = self.compute_orders_starfruit(order_depth, state)
                 result[STAR] += orders_starfruit
         '''   
-        result[BASK], _, _, _ = self.compute_orders_gift(state)
+        result[BASK], result[CHOCO], result[ICHIGO], result[ROSE] = self.compute_orders_gift(state)
         
         logger.flush(state, result, conversions, trader_data)
         return result, conversions, trader_data
