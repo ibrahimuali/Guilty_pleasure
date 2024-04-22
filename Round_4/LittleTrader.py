@@ -3,10 +3,11 @@ import string
 import json
 from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState, ConversionObservation
 from typing import Any
-import math
+from math import exp, log, sqrt, erf
 import pandas as pd
 import numpy as np
 import statistics
+import math
 
 class Logger:
     def __init__(self) -> None:
@@ -113,8 +114,6 @@ class Logger:
 
 logger = Logger()
 
-ORC = 'ORCHIDS'
-
 SUBMIT = "SUBMISSION"
 AMET = "AMETHYSTS"
 STAR = "STARFRUIT"
@@ -123,6 +122,8 @@ BASK = 'GIFT_BASKET'
 ICHIGO = 'STRAWBERRIES'
 CHOCO = 'CHOCOLATE'
 ROSE = 'ROSES'
+COCO = 'COCONUT'
+COUP = 'COCONUT_COUPON'
 
 PRODUCTS = [
     AMET,
@@ -131,7 +132,9 @@ PRODUCTS = [
     BASK,
     ICHIGO,
     CHOCO,
-    ROSE
+    ROSE,
+    COCO,
+    COUP
 ]
 
 DEFAULT_PRICES = {
@@ -141,7 +144,9 @@ DEFAULT_PRICES = {
     CHOCO : 8000,
     ICHIGO : 4000,
     ROSE : 15000,
-    BASK : 71000
+    BASK : 71000,
+    COCO: 10000, 
+    COUP: 637.63
 }
 
 POSITION_LIMIT = {
@@ -154,6 +159,7 @@ POSITION_LIMIT = {
 VOLUME_BASKET = 2
 WINDOW = 200
 
+INF = int(1e9)
 
 class Trader:
     def __init__(self) -> None:
@@ -165,7 +171,9 @@ class Trader:
             CHOCO : 250,
             ICHIGO : 350,
             ROSE : 60,
-            BASK : 60
+            BASK : 60,
+            COCO: 300, 
+            COUP: 600
             }
 
         self.round = 0
@@ -175,32 +183,31 @@ class Trader:
         # positions can be obtained from state.position
         
         self.prices : Dict[PRODUCTS, pd.Series] = {
-            "SPREAD_GIFT": pd.Series(),
+            "SPREAD_GIFT": pd.Series()
             }
         # self.past_prices keeps the list of all past prices
         self.past_prices = dict()
 
         for product in PRODUCTS:
             self.past_prices[product] = []
-        
-        self.ema_prices = dict()
-        
-        for product in PRODUCTS:
-            self.ema_prices[product] = 0
             
-        self.ema_param = 0.5
+        self.starfruit_cache = []
+        self.starfruit_dim = 4
         
         self.p_mid = []
         self.p_spread = []
+        
+        self.timestamp = 0
+        self.total_days = 250
 
     def position(self, product, state : TradingState):
         return state.position.get(product, 0) 
    
     def mid_price(self, product, state : TradingState):
         
-        default_price = self.ema_prices[product]
+        default_price = 0
         
-        if default_price is None:
+        if default_price == 0:
             default_price = DEFAULT_PRICES[product]
 
         if product not in state.order_depths:
@@ -232,8 +239,7 @@ class Trader:
                 # Filter out empty Series before concatenating
                 non_empty_series = [s for s in [self.prices[product], new_series] if not s.empty]
                 self.prices[product] = pd.concat(non_empty_series)
-
-   
+ 
     def value_on_product(self, product, state : TradingState):
         """
         Returns the amount of Cash currently held on the product.  
@@ -246,13 +252,6 @@ class Trader:
         """
         Updates the pnl.
         """
-        
-        def value_on_positions():
-            value = 0
-            for product in state.position:
-                value += self.value_on_product(product, state)
-            return value
-        
         def new_cash():
             # Update cash
             for product in state.own_trades:
@@ -266,182 +265,169 @@ class Trader:
                     if trade.seller == SUBMIT:
                         self.cash += trade.quantity * trade.price
            
+        def value_on_positions():
+            value = 0
+            for product in state.position:
+                value += self.value_on_product(product, state)
+            return value
+           
+        new_cash()
         return self.cash + value_on_positions()
     
-    def ema_price(self, state : TradingState):
-        """
-        Update the exponential moving average of the prices of Starfruit
-        """
-        for product in PRODUCTS:
-            mid_price = self.mid_price(product, state)
-            if mid_price == 0:
-                continue
+    def values_extract(self, order_dict, buy = 0):
+        tot_vol = 0
+        best_val = -1
+        mxvol = -1
 
-            # Update ema price
-            if self.ema_prices[product] == 0:
-                self.ema_prices[product] = mid_price
-            else:
-                self.ema_prices[product] = self.ema_param * mid_price + (1-self.ema_param) * self.ema_prices[product]
-
-    def compute_orders_ameth(self, state: TradingState) -> List[Order]:
-        product = 'AMETHYSTS'
-        limit = 20
-        order_depth: OrderDepth = state.order_depths[product]
+        for ask, vol in order_dict.items():
+            if(buy==0):
+                vol *= -1
+            tot_vol += vol
+            if tot_vol > mxvol:
+                mxvol = vol
+                best_val = ask
         
-        D = {(9996.0, 10004.0): [2955, 2860], (9996.0, 9998.0): [379, 2417], (9996.0, 10002.0): [631, 1318], (9996.0, 10000.0): [177, 154], (10000.0, 10004.0): [139, 77], (10000.0, 10005.0): [65, 25], (10000.0, 10002.0): [44, 37], (9995.0, 10005.0): [1932, 1869], (9995.0, 9998.0): [294, 1280], (9995.0, 10002.0): [457, 624], (9995.0, 10000.0): [27, 80], (9998.0, 10004.0): [1413, 762], (9998.0, 10005.0): [673, 456], (9998.0, 10000.0): [46, 47], (10002.0, 10004.0): [2482, 353], (10002.0, 10005.0): [1303, 221]}
+        return tot_vol, best_val
+    
+    def compute_orders_ameth(self, state: TradingState, acc_bid, acc_ask) -> List[Order]:
+        
+        orders: list[Order] = []
+        
+        sell_orders, buy_orders, vol_buy, vol_sell, best_sell, best_buy = {}, {}, {}, {}, {}, {}
+        
+        sorted_sell_orders = sorted(state.order_depths[AMET].sell_orders.items())
+        sorted_buy_orders = sorted(state.order_depths[AMET].buy_orders.items(), reverse=True)
+            
+        sell_orders = {price: vol for price, vol in sorted_sell_orders}
+        buy_orders = {price: vol for price, vol in sorted_buy_orders}
+            
+        vol_sell, best_sell = self.values_extract(sell_orders)
+        vol_buy, best_buy = self.values_extract(buy_orders, 1)
+        
+        current_position = self.position(AMET, state)
+        
+        mx_with_buy = -1
+        
+        for ask, vol in sell_orders.items():
+            if ((ask < acc_bid) or ((self.position(AMET, state) < 0) and (ask == acc_bid))) and current_position < self.position_limit[AMET]:
+                mx_with_buy = max(mx_with_buy, ask)
+                order_for = min(-vol, self.position_limit[AMET] - current_position)
+                current_position += order_for
+                assert(order_for >= 0)
+                orders.append(Order(AMET, ask, order_for))
+        
+        undercut_buy = best_buy + 1
+        undercut_sell = best_sell - 1
+        
+        bid_pr = min(undercut_buy, acc_bid - 1) # we will shift this by 1 to beat this price
+        sell_pr = max(undercut_sell, acc_ask + 1)
+        
+        if (current_position < self.position_limit[AMET]) and (self.position(AMET, state) < 0):
+            num = min(20, self.position_limit[AMET] - current_position)
+            orders.append(Order(AMET, min(undercut_buy + 1, acc_bid - 1), num))
+            current_position += num
 
-        orders: List[Order] = []
+        if (current_position < self.position_limit[AMET]) and (self.position(AMET, state) > 15):
+            num = min(20, self.position_limit[AMET] - current_position)
+            orders.append(Order(AMET, min(undercut_buy - 1, acc_bid - 1), num))
+            current_position += num
 
-        if product in state.position.keys():
-            q = state.position[product]
-        else:
-            q = 0
+        if current_position < self.position_limit[AMET]:
+            num = min(20, self.position_limit[AMET] - current_position)
+            orders.append(Order(AMET, bid_pr, num))
+            current_position += num
+        
+        current_position = self.position(AMET, state)
 
-        if len(order_depth.sell_orders) > 0:
-            best_ask = min(order_depth.sell_orders.keys())
-            best_ask_volume = order_depth.sell_orders[best_ask]
-            tot = 0
-            vol = 0
-            ctr = 0
-            for key in sorted(order_depth.sell_orders.keys()):
-                if ctr == 3:
-                    break
-                else:
-                    tot += key * order_depth.sell_orders[key]
-                    vol += order_depth.sell_orders[key]
-                    ctr += 1
-            ask_vwap = tot / vol
+        for bid, vol in buy_orders.items():
+            if ((bid > acc_ask) or ((self.position(AMET, state) > 0) and (bid == acc_ask))) and current_position > -self.position_limit[AMET]:
+                order_for = max(-vol, -self.position_limit[AMET]-current_position)
+                # order_for is a negative number denoting how much we will sell
+                current_position += order_for
+                assert(order_for <= 0)
+                orders.append(Order(AMET, bid, order_for))
 
-        if len(order_depth.buy_orders) != 0:
-            best_bid = max(order_depth.buy_orders.keys())
-            best_bid_volume = order_depth.buy_orders[best_bid]
-            tot = 0
-            vol = 0
-            ctr = 0
-            for key in sorted(order_depth.buy_orders.keys()):
-                if ctr == 3:
-                    break
-                else:
-                    tot += key * order_depth.buy_orders[key]
-                    vol += order_depth.buy_orders[key]
-                    ctr += 1
-            bid_vwap = tot / vol
+        if (current_position > -self.position_limit[AMET]) and (self.position(AMET, state) > 0):
+            num = max(-20, -self.position_limit[AMET]-current_position)
+            orders.append(Order(AMET, max(undercut_sell-1, acc_ask+1), num))
+            current_position += num
 
-        self.p_mid.append((bid_vwap + ask_vwap) / 2)
-        self.p_spread.append(best_ask - best_bid)
+        if (current_position > -self.position_limit[AMET]) and (self.position(AMET, state) < -15):
+            num = max(-20, -self.position_limit[AMET]-current_position)
+            orders.append(Order(AMET, max(undercut_sell+1, acc_ask+1), num))
+            current_position += num
 
-        mu = round(statistics.fmean(self.p_mid))
-        spread = round(statistics.fmean(self.p_spread))
-
-        if (best_bid, best_ask) not in D.keys():
-            orders.append(Order(product, mu + spread // 2, (-q - limit)))
-            orders.append(Order(product, mu - spread // 2, (limit - q)))
-        else:
-            p = D[(best_bid, best_ask)][0] / (D[(best_bid, best_ask)][0] + D[(best_bid, best_ask)][1])
-            if p == 1:
-                p = 0.99
-            func = (p * (limit - q) + q) / (1 - p)
-            sell_qty = math.floor(min(limit + q, max(0, func)))
-            buy_qty = math.floor(((1 - p) * sell_qty - q) / p)
-
-            buy_qty = min(limit - q, max(0, buy_qty))
-            f = 0
-
-            if best_ask > mu and best_bid < mu:
-                if q < 0:
-                    orders.append(Order(product, best_ask, -math.ceil(sell_qty * f)))
-                    orders.append(Order(product, best_ask - 1, -math.floor(sell_qty * (1 - f))))
-                    orders.append(Order(product, best_bid + 1, math.floor(buy_qty * (1 - f))))
-                    orders.append(Order(product, best_bid, math.floor(buy_qty * f)))
-                if q >= 0:
-                    orders.append(Order(product, best_ask, -math.ceil(sell_qty * f)))
-                    orders.append(Order(product, best_ask - 1, -math.floor(sell_qty * (1 - f))))
-                    orders.append(Order(product, best_bid + 1, math.floor(buy_qty * (1 - f))))
-                    orders.append(Order(product, best_bid, math.floor(buy_qty * f)))
-            elif best_bid >= mu:
-                if best_bid == mu:
-                    if q >= 0:
-                        orders.append(Order(product, best_bid + 1, -sell_qty))
-                    else:
-                        orders.append(Order(product, best_bid + 1, -math.ceil(sell_qty)))
-                else:
-                    if q >= 0:
-                        orders.append(Order(product, best_bid, -math.ceil(sell_qty * f)))
-                        orders.append(Order(product, best_bid - 1, -math.floor(sell_qty * (1 - f))))
-                    else:
-                        orders.append(Order(product, best_bid, -math.ceil(sell_qty * f)))
-                        orders.append(Order(product, best_bid - 1, -math.floor(sell_qty * (1 - f))))
-            else:
-                if best_ask == mu:
-                    if q <= 0:
-                        orders.append(Order(product, best_ask - 1, buy_qty))
-                    else:
-                        orders.append(Order(product, best_ask - 1, math.ceil(buy_qty)))
-                else:
-                    if q <= 0:
-                        orders.append(Order(product, best_ask, math.ceil(buy_qty * f)))
-                        orders.append(Order(product, best_ask + 1, math.ceil(buy_qty * (1 - f))))
-                    else:
-                        orders.append(Order(product, best_ask, math.ceil(buy_qty * f)))
-                        orders.append(Order(product, best_ask + 1, math.floor(buy_qty * (1 - f))))
+        if current_position > -self.position_limit[AMET]:
+            num = max(-20, -self.position_limit[AMET]-current_position)
+            orders.append(Order(AMET, sell_pr, num))
+            current_position += num
 
         return orders
 
-    def compute_orders_starfruit(self, state: TradingState) -> List[Order]:
-        
-        order_depth: OrderDepth = state.order_depths[STAR]
-        position_star = self.position(STAR, state)
+    def calc_next_price_starfruit(self):
+        if len(self.starfruit_cache) != 4:
+            logger.print("Error: Starfruit cache does not contain exactly 4 elements.")
+            return None
 
-        sell_orders = list(order_depth.sell_orders.items())
-        buy_orders = list(order_depth.buy_orders.items())
+        # If the length is correct, proceed with the calculation
+        coef = [-0.01869561,  0.0455032 ,  0.16316049,  0.8090892]  # Adjusted coefficients
+        intercept = 4.481696494462085  # Adjusted intercept
+        nxt_price = intercept
+        for i, val in enumerate(self.starfruit_cache):
+            nxt_price += val * coef[i]
+
+        return int(round(nxt_price))
+
+    def compute_orders_starfruit(self, state: TradingState, acc_bid, acc_ask) -> List[Order]:
+        
+        orders: list[Order] = []
+        sell_orders, buy_orders, vol_buy, vol_sell, best_sell, best_buy = {}, {}, {}, {}, {}, {}
     
-        best_bid = max(buy_orders, key=lambda x: x[0], default=(0, 0))[0] if buy_orders else 0
-        best_ask = min(sell_orders, key=lambda x: x[0], default=(0, 0))[0] if sell_orders else 0
-
-        bid_volume = math.floor(self.position_limit[STAR] - position_star)
-        ask_volume = math.ceil(-self.position_limit[STAR] - position_star)
-
-        orders = []
-   
-        ema_bid_price = math.floor(self.ema_prices[STAR]) 
-        ema_ask_price = math.ceil(self.ema_prices[STAR])
+        sorted_sell_orders = sorted(state.order_depths[STAR].sell_orders.items())
+        sorted_buy_orders = sorted(state.order_depths[STAR].buy_orders.items(), reverse=True)
             
-        order_bid_price = ema_bid_price - 1
-        order_ask_price = ema_ask_price + 1
-
-        if position_star == 0 or position_star > 0 or position_star < 0:
-            bid_volume = max(0, bid_volume)
-            ask_volume = max(0, ask_volume)
-        
-
-            if bid_volume > 0:
-                orders.append(Order(STAR, order_bid_price, bid_volume))
+        sell_orders = {price: vol for price, vol in sorted_sell_orders}
+        buy_orders = {price: vol for price, vol in sorted_buy_orders}
             
-            if ask_volume > 0:
-                orders.append(Order(STAR, order_ask_price, ask_volume))
+        vol_sell, best_sell = self.values_extract(sell_orders)
+        vol_buy, best_buy = self.values_extract(buy_orders, 1)
                 
+        current_position = self.position(STAR, state)
+         
+        for ask, vol in sell_orders.items():
+            if ((ask <= acc_bid) or ((self.position(STAR, state) < 0) and (ask == acc_bid+1))) and current_position < self.position_limit[STAR]:
+                order_for = min(-vol, self.position_limit[STAR] - current_position)
+                current_position += order_for
+                assert(order_for >= 0)
+                orders.append(Order(STAR, ask, order_for)) 
+        
+        undercut_buy = best_buy + 1
+        undercut_sell = best_sell - 1
+        
+        bid_pr = min(undercut_buy, acc_bid) # we will shift this by 1 to beat this price
+        sell_pr = max(undercut_sell, acc_ask)
+        
+        if current_position < self.position_limit[STAR]:
+            num = self.position_limit[STAR] - current_position
+            orders.append(Order(STAR, bid_pr, num))
+            current_position += num
+        
+        current_position = self.position(STAR, state)
+        
+        for bid, vol in buy_orders.items():
+            if ((bid >= acc_ask) or ((self.position(STAR, state)>0) and (bid+1 == acc_ask))) and current_position > -self.position_limit[STAR]:
+                order_for = max(-vol, -self.position_limit[STAR]-current_position)
+                # order_for is a negative number denoting how much we will sell
+                current_position += order_for
+                assert(order_for <= 0)
+                orders.append(Order(STAR, bid, order_for))
+
+        if current_position > -self.position_limit[STAR]:
+            num = -self.position_limit[STAR]-current_position
+            orders.append(Order(STAR, sell_pr, num))
+            current_position += num
+        
         return orders
-    
-    def volumes(self, product, state: TradingState):
-        sell_orders, buy_orders, vol_buy, vol_sell = {}, {}, {}, {}
-        
-        
-        sell_orders[product] = list(state.order_depth[product].sell_orders.items())
-        buy_orders[product] = list(state.order_depth[product].buy_orders.items())
-        
-        vol_buy[product], vol_sell[product] = 0, 0
-        
-        for price, vol in buy_orders[product].items():
-           vol_buy += vol 
-           
-           if vol_buy[product] >= self.POSITION_LIMIT[product]/10:
-               break
-           
-        for price, vol in sell_orders[product].items():
-           vol_sell += -vol 
-           
-           if vol_sell[product] >= self.POSITION_LIMIT[product]/10:
-               break
      
     def compute_orders_gift(self, state: TradingState)-> List[Order]: 
         orders_choco = []
@@ -515,18 +501,152 @@ class Trader:
                         create_orders(buy_bask)
 
         return orders_bask, orders_choco, orders_ichigo, orders_rose
+    
+    def normal_cdf(self, d_2: float, state: TradingState) -> float:
+        return (1.0 + erf(d_2/sqrt(2.0)))/2.0
+
+    def black_scholes(self, S0: float, K: float, T: float, r: float, sigma: float, state: TradingState) -> float:
+         """Calculate the Black-Scholes option pricing."""
+         if S0 <= 0 or K <= 0:
+            return 0  # Return a default value or handle as appropriate
+         if T <= 0 or sigma <= 0:
+            return 0  # Return a default value or handle as appropriate
+    
+         d1 = (log(S0 / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * sqrt(T))
+         d2 = d1 - sigma * sqrt(T)
+         
+         return S0 * self.normal_cdf(d1, state) - K * exp(-r * T) * self.normal_cdf(d2, state)
+   
+    def implied_volatility(self, state: TradingState, S, K, T, r, market_price, tol=1e-6, max_iterations=1000)-> float:
+        sigma_low = 0.0001
+        sigma_high = 2.0
+        for i in range(max_iterations):
+            sigma_mid = (sigma_low + sigma_high)/2
+            
+            price_mid = self.black_scholes(S, K, T, r, sigma_mid, state)
+            
+            if abs(price_mid - market_price) < tol:
+                return sigma_mid
+            elif price_mid > market_price:
+                sigma_high = sigma_mid
+            else:
+                sigma_low = sigma_mid
+        return (sigma_low + sigma_high) / 2
+     
+    def update_day(self, state: TradingState):
+         """Call this method at every 1,000,000 timestamps to decrement the day."""
+         self.total_days -= 1
+    
+    def compute_orders_coco(self, state) -> List[Order]:
+       """Calculate orders for coconut and coconut coupons based on Black-Scholes pricing and market conditions."""
+       sell_orders, buy_orders, vol_buy, vol_sell, best_sell, best_buy, worst_sell, worst_buy = {}, {}, {}, {}, {}, {}, {}, {}
+       products = [COCO, COUP]
+       orders_coco = []
+       orders_coup = []
+       current_price_coconut = int(self.mid_price(COCO, state))
+       current_price_coupon = int(self.mid_price(COUP, state))
+       
+       self.timestamp += 1
+       if self.timestamp % 1000000 == 0:  # Check if a 'day' has passed every 1,000,000 timestamps
+           self.update_day(state)
+            
+       r = 0 # risk-free rate, made zero
+       #logger.print("Days until exp: {}".format(self.total_days))
+       T = 247/365  # normalize by the number of trading days per year 
+       strike_price = 10000
+       
+       if self.timestamp == 1:
+           sigma = self.implied_volatility(state, DEFAULT_PRICES[COCO],strike_price, T, r, DEFAULT_PRICES[COUP])
+       else:
+           sigma = self.implied_volatility(state, current_price_coconut,strike_price, T, r, current_price_coupon)
+           
+       logger.print("Implied Volatility:{}".format(sigma))
+       
+       price_coupon = round(self.black_scholes(current_price_coconut, strike_price, T, r, sigma, state))
+       logger.print("Coupon Price:{}".format(price_coupon))
+       
+       for product in products:
+           sorted_sell_orders = sorted(state.order_depths[product].sell_orders.items())
+           sorted_buy_orders = sorted(state.order_depths[product].buy_orders.items(), reverse=True)
+           
+           sell_orders[product] = {price: vol for price, vol in sorted_sell_orders}
+           buy_orders[product] = {price: vol for price, vol in sorted_buy_orders}
+           
+           best_sell[product] = next(iter(sell_orders[product]))
+           best_buy[product] = next(iter(buy_orders[product]))
+           
+           worst_sell[product] = next(reversed(sell_orders[product]))
+           worst_buy[product] = next(reversed(buy_orders[product]))
+           
+           vol_buy[product], vol_sell[product] = 0, 0
+              
+           # Iterate over the buy orders
+           for price, vol in buy_orders[product].items():
+               vol_buy[product] += vol 
+               if vol_buy[product] >= self.position_limit[product]/10:
+                   break
+
+           # Iterate over the sell orders
+           for price, vol in buy_orders[product].items():
+               vol_sell[product] += -vol  # Note: Ensure vol is subtracted correctly
+               if vol_sell[product] >= self.position_limit[product]/10:
+                   break
+           
+       logger.print("Volumes to buy and sell: {}, {}".format(vol_buy, vol_sell))
+       logger.print("Best to buy and sell: {}, {}".format(best_buy, best_sell))
+       
+       buy_quantity_coupon = math.floor(min(self.position_limit[COUP] - self.position(COUP, state), vol_buy[COUP]))
+       sell_quantity_coupon = math.ceil(min(self.position(COUP, state) + self.position_limit[COUP], -vol_sell[COUP]))
+       buy_quantity_coconut = math.floor(min(self.position_limit[COCO] - self.position(COCO, state), vol_buy[COCO]))
+       sell_quantity_coconut = math.ceil(min(self.position_limit[COCO] + self.position(COCO, state), -vol_sell[COCO]))
+       '''
+       if price_coupon + strike_price < current_price_coconut:
+           if price_coupon <= worst_sell[COUP] and buy_quantity_coupon > 0:
+               orders_coup.append(Order(COUP, price_coupon, buy_quantity_coupon))
+               logger.print(f"Placed BUY order for COUPON at {price_coupon} for {buy_quantity_coupon} units.")
+
+           if current_price_coconut >= worst_buy[COCO] and sell_quantity_coconut > 0:
+               orders_coco.append(Order(COCO, current_price_coconut, -sell_quantity_coconut))
+               logger.print(f"Placed SELL order for COCONUT at {current_price_coconut} for {sell_quantity_coconut} units.")
+
+       elif price_coupon + strike_price > current_price_coconut:
+           if price_coupon >= worst_sell[COUP] and sell_quantity_coupon > 0:
+               orders_coup.append(Order(COUP, price_coupon, -sell_quantity_coupon))
+               logger.print(f"Placed SELL order for COUPON at {price_coupon} for {sell_quantity_coupon} units.")
+
+           if current_price_coconut <= worst_buy[COCO] and buy_quantity_coconut > 0:
+               orders_coco.append(Order(COCO, current_price_coconut, buy_quantity_coconut))
+               logger.print(f"Placed BUY order for COCONUT at {current_price_coconut} for {buy_quantity_coconut} units.")
+               '''
+       
+       if price_coupon + strike_price < current_price_coconut:
+           buy_quantity_coupon = math.floor(min(self.position_limit[COUP] - self.position(COUP, state), vol_buy[COUP]))
+           sell_quantity_coconut = math.ceil(min(self.position_limit[COCO] + self.position(COCO, state()), -vol_sell[COCO]))
+           if buy_quantity_coupon > 0:
+               orders_coup.append(Order(COUP, price_coupon, buy_quantity_coupon))
+           if sell_quantity_coconut > 0:
+               orders_coco.append(Order(COCO, current_price_coconut, -sell_quantity_coconut))
+               
+       elif price_coupon + strike_price > current_price_coconut:
+           sell_quantity_coupon = math.ceil(min(self.position_limit[COUP] + self.position(COUP, state), -vol_sell[COUP]))
+           buy_quantity_coconut = math.floor(min(self.position_limit[COCO] - self.position(COCO, state), vol_buy[COCO]))
+           if sell_quantity_coupon > 0:
+               orders_coup.append(Order(COUP, price_coupon, -sell_quantity_coupon))
+           if buy_quantity_coconut > 0:
+               orders_coco.append(Order(COCO, current_price_coconut, buy_quantity_coconut))
+             
+       return orders_coco, orders_coup
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         conversions = 0
         trader_data = "Little_Trader"
-        result = { AMET : [], STAR : [], BASK : [], CHOCO : [], ICHIGO : [], ROSE : []} 
+        result = {AMET : [], STAR : [], BASK : [], CHOCO : [], ICHIGO : [], ROSE : [], COCO : [], COUP : []} 
         
         self.round += 1
         pnl = self.pnl(state)
-        self.ema_price(state)
-
+        
         logger.print(f"Log round {self.round}")
-
+        
         logger.print("TRADES:")
         for product in state.own_trades:
             for trade in state.own_trades[product]:
@@ -536,17 +656,38 @@ class Trader:
         logger.print(f"\tCash {self.cash}")
         
         for product in PRODUCTS:
-            logger.print(f"\tProduct {product}, Position {self.position(product, state)}, Midprice {self.mid_price(product, state)}, Value {self.value_on_product(product, state)}, EMA {self.ema_prices[product]}")
+            logger.print(f"\tProduct {product}, Position {self.position(product, state)}, Midprice {self.mid_price(product, state)}, Value {self.value_on_product(product, state)}")
             
         logger.print(f"\tPnL {pnl}")
-     
+       
+        #Starfruit part
+        if len(self.starfruit_cache) == self.starfruit_dim:
+            self.starfruit_cache.pop(0)
+            
+        self.starfruit_cache.append(self.mid_price(STAR, state))
+    
+        starfruit_lb = -INF
+        starfruit_ub = INF
+        
+        if len(self.starfruit_cache) == self.starfruit_dim:
+            starfruit_lb = self.calc_next_price_starfruit() - 1
+            starfruit_ub = self.calc_next_price_starfruit() + 1
+        
+        amethyst_lb = 10000
+        amethyst_ub = 10000
+
+        # CHANGE FROM HERE
+
+        acc_bid = {AMET : amethyst_lb, STAR : starfruit_lb} 
+        acc_ask = {AMET : amethyst_ub, STAR : starfruit_ub}
+
         try:  
-            result[STAR] = self.compute_orders_starfruit(state)
+            result[STAR] = self.compute_orders_starfruit(state, acc_bid[STAR], acc_ask[STAR])
         except Exception as e:
             logger.print(e)
-            
+           
         try:    
-            result[AMET] = self.compute_orders_ameth(state)
+            result[AMET] = self.compute_orders_ameth(state, acc_bid[AMET], acc_ask[AMET])
         except Exception as e:
             logger.print(e)
         
@@ -554,7 +695,11 @@ class Trader:
             result[BASK], _, _, _ = self.compute_orders_gift(state)
         except Exception as e:
             logger.print(e)
-            
+        
+        try:             
+            result[COCO], result[COUP] = self.compute_orders_coco(state)
+        except Exception as e:
+            logger.print(e)
         
         logger.flush(state, result, conversions, trader_data)
         return result, conversions, trader_data

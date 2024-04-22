@@ -197,15 +197,15 @@ class Trader:
         sell_vol, best_sell_pr = self.values_extract(osell)
         buy_vol, best_buy_pr = self.values_extract(obuy, 1)
 
-        cpos = self.position[product]
+        current_position = self.position[product]
 
         mx_with_buy = -1
 
         for ask, vol in osell.items():
-            if ((ask < acc_bid) or ((self.position[product]<0) and (ask == acc_bid))) and cpos < self.POSITION_LIMIT[AMET]:
+            if ((ask < acc_bid) or ((self.position[product]<0) and (ask == acc_bid))) and current_position < self.POSITION_LIMIT[AMET]:
                 mx_with_buy = max(mx_with_buy, ask)
-                order_for = min(-vol, self.POSITION_LIMIT[AMET] - cpos)
-                cpos += order_for
+                order_for = min(-vol, self.POSITION_LIMIT[AMET] - current_position)
+                current_position += order_for
                 assert(order_for >= 0)
                 orders.append(Order(product, ask, order_for))
 
@@ -218,45 +218,45 @@ class Trader:
         bid_pr = min(undercut_buy, acc_bid-1) # we will shift this by 1 to beat this price
         sell_pr = max(undercut_sell, acc_ask+1)
 
-        if (cpos < self.POSITION_LIMIT[AMET]) and (self.position[product] < 0):
-            num = min(40, self.POSITION_LIMIT[AMET] - cpos)
+        if (current_position < self.POSITION_LIMIT[AMET]) and (self.position[product] < 0):
+            num = min(40, self.POSITION_LIMIT[AMET] - current_position)
             orders.append(Order(product, min(undercut_buy + 1, acc_bid-1), num))
-            cpos += num
+            current_position += num
 
-        if (cpos < self.POSITION_LIMIT[AMET]) and (self.position[product] > 15):
-            num = min(40, self.POSITION_LIMIT[AMET] - cpos)
+        if (current_position < self.POSITION_LIMIT[AMET]) and (self.position[product] > 15):
+            num = min(40, self.POSITION_LIMIT[AMET] - current_position)
             orders.append(Order(product, min(undercut_buy - 1, acc_bid-1), num))
-            cpos += num
+            current_position += num
 
-        if cpos < self.POSITION_LIMIT[AMET]:
-            num = min(40, self.POSITION_LIMIT[AMET] - cpos)
+        if current_position < self.POSITION_LIMIT[AMET]:
+            num = min(40, self.POSITION_LIMIT[AMET] - current_position)
             orders.append(Order(product, bid_pr, num))
-            cpos += num
+            current_position += num
         
-        cpos = self.position[product]
+        current_position = self.position[product]
 
         for bid, vol in obuy.items():
-            if ((bid > acc_ask) or ((self.position[product]>0) and (bid == acc_ask))) and cpos > -self.POSITION_LIMIT[AMET]:
-                order_for = max(-vol, -self.POSITION_LIMIT[AMET]-cpos)
+            if ((bid > acc_ask) or ((self.position[product]>0) and (bid == acc_ask))) and current_position > -self.POSITION_LIMIT[AMET]:
+                order_for = max(-vol, -self.POSITION_LIMIT[AMET]-current_position)
                 # order_for is a negative number denoting how much we will sell
-                cpos += order_for
+                current_position += order_for
                 assert(order_for <= 0)
                 orders.append(Order(product, bid, order_for))
 
-        if (cpos > -self.POSITION_LIMIT[AMET]) and (self.position[product] > 0):
-            num = max(-40, -self.POSITION_LIMIT[AMET]-cpos)
+        if (current_position > -self.POSITION_LIMIT[AMET]) and (self.position[product] > 0):
+            num = max(-40, -self.POSITION_LIMIT[AMET]-current_position)
             orders.append(Order(product, max(undercut_sell-1, acc_ask+1), num))
-            cpos += num
+            current_position += num
 
-        if (cpos > -self.POSITION_LIMIT[AMET]) and (self.position[product] < -15):
-            num = max(-40, -self.POSITION_LIMIT[AMET]-cpos)
+        if (current_position > -self.POSITION_LIMIT[AMET]) and (self.position[product] < -15):
+            num = max(-40, -self.POSITION_LIMIT[AMET]-current_position)
             orders.append(Order(product, max(undercut_sell+1, acc_ask+1), num))
-            cpos += num
+            current_position += num
 
-        if cpos > -self.POSITION_LIMIT[AMET]:
-            num = max(-40, -self.POSITION_LIMIT[AMET]-cpos)
+        if current_position > -self.POSITION_LIMIT[AMET]:
+            num = max(-40, -self.POSITION_LIMIT[AMET]-current_position)
             orders.append(Order(product, sell_pr, num))
-            cpos += num
+            current_position += num
 
         return orders
 
@@ -270,12 +270,12 @@ class Trader:
         sell_vol, best_sell_pr = self.values_extract(osell)
         buy_vol, best_buy_pr = self.values_extract(obuy, 1)
 
-        cpos = self.position[product]
+        current_position = self.position[product]
 
         for ask, vol in osell.items():
-            if ((ask <= acc_bid) or ((self.position[product]<0) and (ask == acc_bid+1))) and cpos < LIMIT:
-                order_for = min(-vol, LIMIT - cpos)
-                cpos += order_for
+            if ((ask <= acc_bid) or ((self.position[product]<0) and (ask == acc_bid+1))) and current_position < LIMIT:
+                order_for = min(-vol, LIMIT - current_position)
+                current_position += order_for
                 assert(order_for >= 0)
                 orders.append(Order(product, ask, order_for))
 
@@ -285,26 +285,26 @@ class Trader:
         bid_pr = min(undercut_buy, acc_bid) # we will shift this by 1 to beat this price
         sell_pr = max(undercut_sell, acc_ask)
 
-        if cpos < LIMIT:
-            num = LIMIT - cpos
+        if current_position < LIMIT:
+            num = LIMIT - current_position
             orders.append(Order(product, bid_pr, num))
-            cpos += num
+            current_position += num
         
-        cpos = self.position[product]
+        current_position = self.position[product]
         
 
         for bid, vol in obuy.items():
-            if ((bid >= acc_ask) or ((self.position[product]>0) and (bid+1 == acc_ask))) and cpos > -LIMIT:
-                order_for = max(-vol, -LIMIT-cpos)
+            if ((bid >= acc_ask) or ((self.position[product]>0) and (bid+1 == acc_ask))) and current_position > -LIMIT:
+                order_for = max(-vol, -LIMIT-current_position)
                 # order_for is a negative number denoting how much we will sell
-                cpos += order_for
+                current_position += order_for
                 assert(order_for <= 0)
                 orders.append(Order(product, bid, order_for))
 
-        if cpos > -LIMIT:
-            num = -LIMIT-cpos
+        if current_position > -LIMIT:
+            num = -LIMIT-current_position
             orders.append(Order(product, sell_pr, num))
-            cpos += num
+            current_position += num
 
         return orders
     
